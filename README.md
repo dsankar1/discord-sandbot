@@ -1,0 +1,1 @@
+For getting familiar with Discord API
