@@ -19,18 +19,30 @@ func init() {
 
 }
 
+func handleVoiceConnection(vc *discordgo.VoiceConnection) {
+	for packet := range vc.OpusRecv {
+		fmt.Printf("Speaking: %v / Timestamp: %v\n", vc.UserID, packet.Timestamp)
+	}
+	fmt.Println("Opus channel closed")
+}
+
 func closeVoiceConnections(s *discordgo.Session) {
 	for _, vc := range s.VoiceConnections {
 		vc.Close()
 	}
 }
 
+func disconnectVoiceConnection(vc *discordgo.VoiceConnection) (err error) {
+	err = vc.Disconnect()
+	if err == nil && vc.OpusRecv != nil {
+		close(vc.OpusRecv)
+	}
+	return
+}
+
 func disconnectVoiceConnections(s *discordgo.Session) (err error) {
 	for _, vc := range s.VoiceConnections {
-		err = vc.Disconnect()
-		if err == nil {
-			close(vc.OpusRecv)
-		}
+		err = disconnectVoiceConnection(vc)
 	}
 	return
 }
@@ -90,20 +102,11 @@ func messageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 	}
 
 	if strings.Contains(mc, "jarvis dismiss") && vc != nil {
-		err := vc.Disconnect()
+		err := disconnectVoiceConnections(s)
 		if err != nil {
-			fmt.Println("Failed to disconnect voice connection,", err)
-		} else {
-			close(vc.OpusRecv)
+			fmt.Println("Failed to disconnect some voice connections,", err)
 		}
 	}
-}
-
-func handleVoiceConnection(vc *discordgo.VoiceConnection) {
-	for packet := range vc.OpusRecv {
-		fmt.Println("Packet: ", packet.Timestamp)
-	}
-	fmt.Println("Opus channel closed")
 }
 
 func main() {
