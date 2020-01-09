@@ -16,12 +16,19 @@ var (
 )
 
 func init() {
-
+	token = os.Getenv("DISCORD_JARVIS_TOKEN")
 }
 
 func handleVoiceConnection(vc *discordgo.VoiceConnection) {
+	// var vs *discordgo.VoiceSpeakingUpdate
+
+	// vc.AddHandler(func(_ *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
+	// 	fmt.Println("Voice Speaking Update", vs.UserID)
+	// 	// vs = event
+	// })
+
 	for packet := range vc.OpusRecv {
-		fmt.Printf("Speaking: %v / Timestamp: %v\n", vc.UserID, packet.Timestamp)
+		fmt.Printf("Channel: %v / Timestamp: %v\n", vc.ChannelID, packet.Timestamp)
 	}
 	fmt.Println("Opus channel closed")
 }
@@ -43,6 +50,9 @@ func disconnectVoiceConnection(vc *discordgo.VoiceConnection) (err error) {
 func disconnectVoiceConnections(s *discordgo.Session) (err error) {
 	for _, vc := range s.VoiceConnections {
 		err = disconnectVoiceConnection(vc)
+		if err != nil {
+			return
+		}
 	}
 	return
 }
