@@ -1,36 +1,95 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	speech "cloud.google.com/go/speech/apiv1"
 	"github.com/bwmarrin/discordgo"
+	speechpb "google.golang.org/genproto/googleapis/cloud/speech/v1"
 )
 
 var (
-	token string
+	token  string
+	ctx    context.Context
+	client *speech.Client
+	stream speechpb.Speech_StreamingRecognizeClient
 )
 
 func init() {
 	token = os.Getenv("DISCORD_JARVIS_TOKEN")
+	ctx = context.Background()
 }
 
-func handleVoiceConnection(vc *discordgo.VoiceConnection) {
-	// var vs *discordgo.VoiceSpeakingUpdate
-
-	// vc.AddHandler(func(_ *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
-	// 	fmt.Println("Voice Speaking Update", vs.UserID)
-	// 	// vs = event
-	// })
-
-	for packet := range vc.OpusRecv {
-		fmt.Printf("Channel: %v / Timestamp: %v\n", vc.ChannelID, packet.Timestamp)
+func translateSpeech(vc *discordgo.VoiceConnection, bytes []byte) {
+	fmt.Println("Collected Audio Sample", len(bytes))
+	n, err := os.Stdin.Read(bytes)
+	if n > 0 {
+		if err := stream.Send(&speechpb.StreamingRecognizeRequest{
+			StreamingRequest: &speechpb.StreamingRecognizeRequest_AudioContent{
+				AudioContent: bytes[:n],
+			},
+		}); err != nil {
+			log.Printf("Could not send audio: %v", err)
+		}
 	}
-	fmt.Println("Opus channel closed")
+	if err == io.EOF {
+		// Nothing else to pipe, close the stream.
+		if err := stream.CloseSend(); err != nil {
+			log.Fatalf("Could not close stream: %v", err)
+		}
+		return
+	}
+	if err != nil {
+		log.Printf("Could not read from stdin: %v", err)
+	}
+
+	for {
+		resp, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Fatalf("Cannot stream results: %v", err)
+		}
+		if err := resp.Error; err != nil {
+			log.Fatalf("Could not recognize: %v", err)
+		}
+		for _, result := range resp.Results {
+			fmt.Printf("Result: %+v\n", result)
+		}
+	}
+}
+
+func handleVoiceSpeaking(vc *discordgo.VoiceConnection) {
+	bytes := []byte{}
+	if vc != nil {
+	vcLoop:
+		for {
+			select {
+			case packet, open := <-vc.OpusRecv:
+				if open {
+					bytes = append(bytes, packet.Opus...)
+				} else {
+					break vcLoop
+				}
+			case <-time.After(time.Second):
+				if len(bytes) > 0 {
+					go translateSpeech(vc, bytes)
+					bytes = []byte{}
+				}
+			}
+		}
+	}
+	fmt.Println("Voice channel closed")
 }
 
 func closeVoiceConnections(s *discordgo.Session) {
@@ -100,7 +159,7 @@ func messageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 			if err != nil {
 				fmt.Println("Failed to join user's voice channel,", err)
 			} else {
-				go handleVoiceConnection(vc)
+				go handleVoiceSpeaking(vc)
 			}
 		} else {
 			fmt.Println("Changing voice channel")
@@ -120,6 +179,37 @@ func messageCreateHandler(s *discordgo.Session, m *discordgo.MessageCreate) {
 }
 
 func main() {
+
+	// Creates a client.
+	newClient, err := speech.NewClient(ctx)
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+		return
+	}
+	fmt.Println("GCP Client Connected")
+	client = newClient
+	newStream, err := client.StreamingRecognize(ctx)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	// Send the initial configuration message.
+	if err := newStream.Send(&speechpb.StreamingRecognizeRequest{
+		StreamingRequest: &speechpb.StreamingRecognizeRequest_StreamingConfig{
+			StreamingConfig: &speechpb.StreamingRecognitionConfig{
+				Config: &speechpb.RecognitionConfig{
+					Encoding:        speechpb.RecognitionConfig_OGG_OPUS,
+					SampleRateHertz: 12000,
+					LanguageCode:    "en-US",
+				},
+			},
+		},
+	}); err != nil {
+		log.Fatal(err)
+		return
+	}
+	stream = newStream
+
 	s, err := discordgo.New("Bot " + token)
 	if err != nil {
 		fmt.Println("Error creating Discord session, ", err)
